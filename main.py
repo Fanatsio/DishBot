@@ -27,12 +27,16 @@ class Storage:
         try:
             with open(self.filename, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
-        except FileNotFoundError:
+        except (FileNotFoundError, json.JSONDecodeError):
+            logging.warning("⚠️ Файл данных отсутствует или поврежден. Создан новый.")
             self.save()
 
     def save(self):
-        with open(self.filename, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.filename, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f"❌ Ошибка при сохранении данных: {e}")
 
     def add_user(self, user_id: int, name: str) -> bool:
         if not any(u["id"] == user_id for u in self.data["users"]):
@@ -41,13 +45,15 @@ class Storage:
             return True
         return False
 
-    def add_history(self, name: str) -> bool:
-        today = str(date.today())
-
-        if any(h["date"] == today and h["user"] == name for h in self.data["history"]):
+    def add_history(self, user_id: int) -> bool:
+        today = date.today().strftime("%d-%m-%y")
+        if not any(u["id"] == user_id for u in self.data["users"]):
             return False
 
-        self.data["history"].append({"date": today, "user": name})
+        if any(h["date"] == today and h["user_id"] == user_id for h in self.data["history"]):
+            return False
+
+        self.data["history"].append({"date": today, "user_id": user_id})
         self.save()
         return True
 
@@ -55,10 +61,13 @@ class Storage:
         if not self.data["history"]:
             return "История пока пуста."
 
-        text = "🕑 История мытья:\n"
+        text = "🕑 История мытья посуды:\n\n"
         for h in self.data["history"][-limit:]:
-            text += f"{h['date']}: {h['user']}\n"
+            user = next((u for u in self.data["users"] if u["id"] == h["user_id"]), None)
+            name = user["name"] if user else "Неизвестный"
+            text += f"📅 {h['date']} — {name}\n"
         return text
+
 
 storage = Storage(DATA_FILE)
 bot = Bot(TOKEN)
@@ -83,8 +92,10 @@ async def cmd_start(message: types.Message):
 
 @dp.message(lambda msg: msg.text == "✅ Я помыл")
 async def cmd_done(message: types.Message):
-    name = message.from_user.full_name
-    if storage.add_history(name):
+    uid = message.from_user.id
+    if storage.add_history(uid):
+        user = next((u for u in storage.data["users"] if u["id"] == uid), None)
+        name = user["name"] if user else message.from_user.full_name
         await message.answer(f"✅ Отлично! {name} помыл(а) посуду.")
     else:
         await message.answer("Ты уже отмечался сегодня 😉")
