@@ -1,33 +1,69 @@
 import asyncio
 import json
+import os
+import logging
+from datetime import date
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from datetime import date
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN", "")
 DATA_FILE = "data.json"
 
-# Загружаем или инициализируем данные
-try:
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except FileNotFoundError:
-    data = {"users": [], "history": []}
+logging.basicConfig(level=logging.INFO)
 
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
+
+class Storage:
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.data = {"users": [], "history": []}
+        self.load()
+
+    def load(self):
+        try:
+            with open(self.filename, "r", encoding="utf-8") as f:
+                self.data = json.load(f)
+        except FileNotFoundError:
+            self.save()
+
+    def save(self):
+        with open(self.filename, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+
+    def add_user(self, user_id: int, name: str) -> bool:
+        if not any(u["id"] == user_id for u in self.data["users"]):
+            self.data["users"].append({"id": user_id, "name": name})
+            self.save()
+            return True
+        return False
+
+    def add_history(self, name: str) -> bool:
+        today = str(date.today())
+
+        if any(h["date"] == today and h["user"] == name for h in self.data["history"]):
+            return False
+
+        self.data["history"].append({"date": today, "user": name})
+        self.save()
+        return True
+
+    def get_history(self, limit: int = 10) -> str:
+        if not self.data["history"]:
+            return "История пока пуста."
+
+        text = "🕑 История мытья:\n"
+        for h in self.data["history"][-limit:]:
+            text += f"{h['date']}: {h['user']}\n"
+        return text
+
+storage = Storage(DATA_FILE)
 bot = Bot(TOKEN)
 dp = Dispatcher()
 
-
-def save_data():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-# --- КНОПКИ ---
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ Я помыл")],
@@ -36,47 +72,30 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     uid = message.from_user.id
     name = message.from_user.full_name
-    if uid not in [u["id"] for u in data["users"]]:
-        data["users"].append({"id": uid, "name": name})
-        save_data()
+    if storage.add_user(uid, name):
         await message.answer(f"Ты добавлен в список, {name}!", reply_markup=main_kb)
     else:
         await message.answer("Ты уже есть в списке.", reply_markup=main_kb)
 
-
 @dp.message(lambda msg: msg.text == "✅ Я помыл")
 async def cmd_done(message: types.Message):
     name = message.from_user.full_name
-
-    # Записываем в историю
-    data["history"].append({
-        "date": str(date.today()),
-        "user": name
-    })
-    save_data()
-
-    await message.answer(f"✅ Отлично! {name} помыл(а) посуду.")
-
+    if storage.add_history(name):
+        await message.answer(f"✅ Отлично! {name} помыл(а) посуду.")
+    else:
+        await message.answer("Ты уже отмечался сегодня 😉")
 
 @dp.message(lambda msg: msg.text == "🕑 История")
 async def cmd_history(message: types.Message):
-    if not data["history"]:
-        await message.answer("История пока пуста.")
-        return
-    text = "История мытья:\n"
-    for h in data["history"][-10:]:
-        text += f"{h['date']}: {h['user']}\n"
-    await message.answer(text)
-
+    await message.answer(storage.get_history())
 
 async def main():
+    logging.info("🚀 Бот запущен...")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
